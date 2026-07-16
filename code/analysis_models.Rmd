@@ -1,0 +1,743 @@
+---
+title: "data_cleaning"
+output: html_document
+date: "2026-07-16"
+---
+
+# Analysis Models
+
+## Preparing data
+
+```{r loading-libraries, message = FALSE}
+library(tidyverse)
+library(sf)
+library(dplyr)
+library(visdat)
+library(naniar)
+library(gtsummary)
+library(gt)
+library(mice)
+library(nlme)
+library(lme4)
+library(gtsummary)
+library(flextable)
+library(knitr)
+library(kableExtra)
+library(officer)
+```
+
+```{r loading-data}
+data <- readRDS("data/imputed_dataset.rds")
+```
+
+```{r recoding-canale-quintiles}
+data <- data %>%
+  mutate(
+    ALE_q = ntile(ALE_index, 5)
+  )
+
+data <- data %>%
+  mutate(
+    transit_q = ntile(trstop_count, 5)
+  )
+```
+
+```{r capping-mvpa}
+summary(data$mvpa_harmonized)
+quantile(data$mvpa_harmonized, probs = c(.95, .97, .99), na.rm = TRUE)
+
+data <- data %>% 
+  filter(is.na(mvpa_harmonized) | mvpa_harmonized <= 4500)
+
+data <- data %>% 
+  mutate(mvpa_cap = case_when(
+    mvpa_harmonized >1260 ~ 1260,
+    TRUE ~ mvpa_harmonized
+  ))
+
+summary(data$mvpa_cap)
+```
+
+```{r categorizing-exposure}
+data <- data %>%
+  mutate(
+    walk_days = as.integer(as.character(travel_walk)),
+    bike_days = as.integer(as.character(travel_bike))
+  )
+
+data <- data %>%
+  mutate(
+    active_travel = case_when(
+      walk_days + bike_days <= 7 ~ pmax(walk_days, bike_days, na.rm = TRUE),
+      walk_days + bike_days > 7  ~ pmin(7, round((walk_days + bike_days) / 2)),
+      TRUE ~ NA_real_
+    )
+  )
+
+data %>%
+  select(walk_days, bike_days, active_travel) %>%
+  sample_n(10)
+
+summary(data$walk_days)
+summary(data$bike_days)
+summary(data$active_travel)
+
+data <- data %>%
+  mutate(
+    active_travel_cat = case_when(
+      active_travel == 0 ~ "None",
+      active_travel %in% 1:3 ~ "Occasional",
+      active_travel >= 4 ~ "Regular"
+    ),
+    active_travel_cat = factor( # creating reference group (none)
+      active_travel_cat,
+      levels = c("None", "Occasional", "Regular")
+    )
+  )
+```
+
+```{r recoding-income}
+data <- data %>%
+  mutate(
+    income_recode = case_when(
+      income %in% c(1,2,3,4,5) ~ "Less than $50,000",
+      income %in% c(6)         ~ "Between $50,000 and $99,999",
+      income %in% c(7,8,9)     ~ "More than $100,000"))
+
+table(data$income, data$income_recode)
+```
+
+```{r recoding-gender}
+data <- data %>%
+  mutate(
+    gender_name = case_when(
+      gender == 1 ~ "Man",
+      gender == 2 ~ "Woman",
+      gender == 3 ~ "Trans man",
+      gender == 4 ~ "Trans woman",
+      gender == 5 ~ "Genderqueer/Gender non-conforming",
+      gender == 6 ~ "Different identity"),
+    gender_name = factor(
+      gender_name,
+      levels = c("Man", "Woman", "Trans man", "Trans woman", "Genderqueer/Gender non-conforming", "Different identity")))
+
+table(data$gender, data$gender_name)
+```
+
+```{r recoding-ethnicity}
+data <- data %>%
+  mutate(
+    ethnicity = case_when(
+      ethnicity_r == 1 ~ "African origins",
+      ethnicity_r == 2 ~ "Asian origins",
+      ethnicity_r == 3 ~ "European origins",
+      ethnicity_r == 4 ~ "Latin, Central and South American origins",
+      ethnicity_r == 5 ~ "North American origins",
+      ethnicity_r == 6 ~ "Other ethnic and cultural origins"))
+
+table(data$ethnicity_r, data$ethnicity)
+```
+
+```{r ale-quintiles}
+data <- data %>%
+  mutate(
+    ALE_name = case_when(
+      ALE_q == 1 ~ "Very low",
+      ALE_q == 2 ~ "Low",
+      ALE_q == 3 ~ "Moderate",
+      ALE_q == 4 ~ "High",
+      ALE_q == 5 ~ "Very high"),
+    ALE_name = factor(
+      ALE_name,
+      levels = c("Very low", "Low", "Moderate", "High", "Very high")))
+
+table(data$ALE_q, data$ALE_name)
+```
+
+```{r transit-access}
+data <- data %>%
+  mutate(
+    transit_name = case_when(
+      transit_q == 1 ~ "Very low",
+      transit_q == 2 ~ "Low",
+      transit_q == 3 ~ "Moderate",
+      transit_q == 4 ~ "High",
+      transit_q == 5 ~ "Very high"),
+    transit_name = factor(
+      transit_name,
+      levels = c("Very low", "Low", "Moderate", "High", "Very high")))
+
+table(data$transit_q, data$transit_name)
+```
+
+## Creating table 1
+
+```{r}
+table1 <- data %>%
+  st_drop_geometry() %>%
+  select(
+    gender_name, age, ethnicity, income_recode,
+    mvpa_cap, 
+    active_travel_cat,
+    ALE_name, transit_name
+  ) %>%
+  tbl_summary(
+    label = list(
+      gender_name ~ "Gender",
+      age ~ "Age (years)",
+      ethnicity ~ "Ethnic background",
+      income_recode ~ "Annual household income",
+      mvpa_cap ~ "MVPA minutes per week",
+      active_travel_cat ~ "Walking and Cycling (frequency past 7 days)",
+      ALE_name ~ "Active Living Environment (ALE) index class",
+      transit_name ~ "Transit stops"),
+    by = NULL,                 # no grouping
+    missing = "no"             # hide missing counts
+  ) %>%
+  modify_header(label ~ "Variable") %>%
+  modify_caption("**Table 3.1. Participant Characteristics**")
+
+table1
+```
+
+```{r saving-table-1}
+table1_flex <- as_flex_table(table1) %>%
+  autofit() %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  bold(part = "header") %>%
+set_caption(
+  caption = as_paragraph(
+    as_chunk(
+      "Table 3.1. ",
+      props = fp_text(font.family = "Times New Roman", font.size = 12, bold = TRUE)
+    ),
+    as_chunk(
+      "Participant Characteristics",
+      props = fp_text(font.family = "Times New Roman", font.size = 12, bold = FALSE)
+    )))
+
+table1_flex
+
+save_as_docx(
+  table1_flex,
+  path = "tables and figures/table1.docx"
+)
+```
+
+```{r table-1-by-city-and-wave}
+table1_city_wave <- data %>%
+  st_drop_geometry() %>%
+  select(
+    wave,                     
+    gender_name, age, ethnicity, income_recode,
+    mvpa_cap, 
+    active_travel_cat,
+    ALE_name, transit_name, city_id
+  ) %>%
+  tbl_strata(
+    strata = city_id,
+    .tbl_fun = ~ .x %>%
+      tbl_summary(
+        by = wave,
+        label = list(
+          gender_name ~ "Gender",
+          age ~ "Age (years)",
+          ethnicity ~ "Ethnic background",
+          income_recode ~ "Annual household income",
+          mvpa_cap ~ "MVPA minutes per week",
+          active_travel_cat ~ "Walking and Cycling (frequency past 7 days)",
+          ALE_name ~ "Active Living Environment (ALE) index class",
+          transit_name ~ "Transit stops (z-score)"
+        ),
+        missing = "no"
+      )
+  )
+
+table1_city_wave
+```
+
+```{r saving-additional-table}
+table1_city_wave_flex <- as_flex_table(table1_city_wave) %>%
+  autofit() %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  bold(part = "header") %>%
+set_caption(
+  caption = as_paragraph(
+    as_chunk(
+      "Table 3.2. ",
+      props = fp_text(font.family = "Times New Roman", font.size = 12, bold = TRUE)
+    ),
+    as_chunk(
+      "Participant Characteristics by Wave",
+      props = fp_text(font.family = "Times New Roman", font.size = 12, bold = FALSE)
+    )))
+
+save_as_docx(
+  table1_city_wave_flex,
+  path = "tables and figures/table1_city_wave.docx"
+)
+```
+
+## Final models
+
+```{r recoding gender}
+data <- data %>%
+  mutate(
+    gender_r = case_when(
+      gender == 1 ~ "Man",
+      gender == 2 ~ "Woman",
+      gender %in% c(3,4,5,6) ~ "Genderqueer/Gender non-conforming"
+    ),
+    gender_r = factor(
+      gender_r,
+      levels = c("Man", "Woman", "Genderqueer/Gender non-conforming")
+    )
+  )
+```
+
+```{r reference-groups}
+data <- data %>%
+  mutate(
+    active_travel_cat = factor(active_travel_cat, levels = c("None","Occasional","Regular")),
+    ALE_q = factor(ALE_q, levels = 1:5,
+                   labels = c("Q1","Q2","Q3","Q4","Q5")),
+    transit_q = factor(transit_q, levels = 1:5,
+                       labels = c("Q1","Q2","Q3","Q4","Q5")),
+    income_recode = factor(income_recode,
+                           levels = c(
+                             "Less than $50,000",
+                             "Between $50,000 and $99,999",
+                             "More than $100,000")))
+```
+
+```{r null-model}
+null_model <- lme(mvpa_cap ~ 1, random = ~ 1 | interact_id, data = data)
+
+summary(null_model)
+```
+
+```{r linear-model}
+lm_model <- lm(mvpa_cap ~ age + gender_r + city_id + ethnicity + active_travel_cat + ALE_q + transit_q + income_recode + active_travel_cat*ALE_q,
+  data = data
+)
+
+summary(lm_model)
+```
+
+```{r lme-no-covariates}
+lmer_simple <- lmer(
+  mvpa_cap ~ active_travel_cat +
+  (1 | interact_id),
+  data = data
+)
+
+summary(lmer_simple)
+```
+
+```{r lme-random-intercepts}
+lmer_cov <- lmer(
+  mvpa_cap ~ age + gender_r + city_id + ethnicity + active_travel_cat + ALE_q + transit_q + income_recode + active_travel_cat*ALE_q +
+  (1 | interact_id),
+  data = data)
+
+summary(lmer_cov)
+```
+
+```{r lme-random-slopes}
+data_rs <- data %>%
+  group_by(interact_id) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+data_rs$wave <- as.numeric(as.character(data_rs$wave))
+
+lmer_rs <- lmer(
+  mvpa_cap ~ age + gender_r + city_id + ethnicity + active_travel_cat + ALE_q + transit_q + income_recode + active_travel_cat*ALE_q +
+    (1 + wave | interact_id),
+  data = data_rs,
+  REML = TRUE)
+
+summary(lmer_rs)
+```
+
+## Creating table 2
+
+```{r creating-table-2}
+tbl1 <- tbl_regression(
+  lm_model,
+  label = list(
+    active_travel_cat ~ "Active travel",
+    ALE_q ~ "Walkability (ALE)",
+    transit_q ~ "Transit access",
+    income_recode ~ "Income",
+    age ~ "Age",
+    gender_r ~ "Gender",
+    ethnicity ~ "Ethnicity",
+    city_id ~ "City"
+  ),
+  show_single_row = NULL,
+  estimate_fun = ~ style_number(.x, digits = 1)
+)
+
+tbl2 <- tbl_regression(
+  lmer_cov,
+  label = list(
+    active_travel_cat ~ "Active travel",
+    ALE_q ~ "Walkability (ALE)",
+    transit_q ~ "Transit access",
+    income_recode ~ "Income",
+    age ~ "Age",
+    gender_r ~ "Gender",
+    ethnicity ~ "Ethnicity",
+    city_id ~ "City"
+  ),
+  show_single_row = NULL,
+  estimate_fun = ~ style_number(.x, digits = 1)
+)
+
+tbl3 <- tbl_regression(
+  lmer_rs,
+  label = list(
+    active_travel_cat ~ "Active travel",
+    ALE_q ~ "Walkability (ALE)",
+    transit_q ~ "Transit access",
+    income_recode ~ "Income",
+    age ~ "Age",
+    gender_r ~ "Gender",
+    ethnicity ~ "Ethnicity",
+    city_id ~ "City"
+  ),
+  show_single_row = NULL,
+  estimate_fun = ~ style_number(.x, digits = 1)
+)
+
+table2 <- tbl_merge(
+  tbls = list(tbl1, tbl2, tbl3),
+  tab_spanner = c(
+    "**Linear Model**",
+    "**Mixed-effects model**",
+    "**Random slope model**"
+  )
+)
+
+table2 
+```
+
+```{r bivariable-models}
+mvpa_active <- lm(mvpa_cap ~ active_travel_cat, data = data)
+summary(mvpa_active)
+
+mvpa_ale <- lm(mvpa_cap ~ ALE_q, data = data)
+summary(mvpa_ale)
+
+mvpa_transit <- lm(mvpa_cap ~ transit_q, data = data)
+summary(mvpa_transit)
+
+mvpa_income <- lm(mvpa_cap ~ income_recode, data = data)
+summary(mvpa_income)
+```
+
+```{r bivariable-results}
+manual_biv <- tibble(
+  variable = c(
+    "age",
+
+    "gender_r",
+    "gender_r",
+    "gender_r",
+
+    "city_id",
+    "city_id",
+    "city_id",
+    "city_id",
+
+    "ethnicity",
+    "ethnicity",
+    "ethnicity",
+    "ethnicity",
+    "ethnicity",
+    "ethnicity",
+
+    "active_travel_cat",
+    "active_travel_cat",
+    "active_travel_cat",
+
+    "ALE_q",
+    "ALE_q",
+    "ALE_q",
+    "ALE_q",
+    "ALE_q",
+
+    "transit_q",
+    "transit_q",
+    "transit_q",
+    "transit_q",
+    "transit_q",
+
+    "income_recode",
+    "income_recode",
+    "income_recode"
+  ),
+
+  label = c(
+    "Age",
+
+    "Man",
+    "Woman",
+    "Genderqueer/Gender non-conforming",
+
+    "Montréal",
+    "Saskatoon",
+    "Vancouver",
+    "Victoria",
+
+    "African origins",
+    "Asian origins",
+    "European origins",
+    "Latin, Central and South American origins",
+    "North American origins",
+    "Other ethnic and cultural origins",
+
+    "None",
+    "Occasional",
+    "Regular",
+
+    "Q1",
+    "Q2",
+    "Q3",
+    "Q4",
+    "Q5",
+
+    "Q1",
+    "Q2",
+    "Q3",
+    "Q4",
+    "Q5",
+
+    "Less than $50,000",
+    "Between $50,000 and $99,999",
+    "More than $100,000"
+  ),
+
+  bivariable = c(
+    "",
+
+    "—",
+    "",
+    "",
+
+    "—",
+    "",
+    "",
+    "",
+
+    "—",
+    "",
+    "",
+    "",
+    "",
+    "",
+
+    "—",
+    "78.8 (44.2, 113.4)",
+    "262.9 (231.0, 294.8)",
+
+    "—",
+    "-9.2 (-37.2, 18.7)",
+    "-4.5 (-32.4, 23.5)",
+    "-11.2 (-39.1, 16.7)",
+    "-2.6 (-30.5, 25.3)",
+
+    "—",
+    "-4.2 (-32.0, 23.7)",
+    "-32.0 (-59.9, -4.2)",
+    "-77.9 (-105.7, -50.0)",
+    "-53.2 (-81.0, -25.3)",
+
+    "—",
+    "-22.0 (-45.4, 1.3)",
+    "-16.7 (-38.8, 5.3)"
+  )
+)
+
+```
+
+```{r joining-bivariable}
+table2 <- table2 %>%
+  modify_table_body(
+    ~ .x %>%
+      left_join(
+        manual_biv,
+        by = c("variable", "label")
+      ) %>%
+      relocate(bivariable, .before = estimate_1)
+  )
+```
+
+```{r random-effects}
+extra_rows <- tibble(
+  variable = c(
+    "sigma2",
+    "tau00",
+    "tau11",
+    "icc",
+    "corr",
+    "n_groups",
+    "n_obs"
+  ),
+
+  row_type = "label",
+
+  label = c(
+    "σ²",
+    "τ₀₀",
+    "τ₁₁",
+    "ICC",
+    "Corr",
+    "N",
+    "Observations"
+  ),
+
+  # Linear model
+  estimate_1 = c(
+    NA,
+    NA,
+    NA,
+    NA,
+    NA,
+    NA,
+    nobs(lm_model)
+  ),
+
+  # Mixed-effects model
+  estimate_2 = c(
+    77722,
+    53147,
+    NA,
+    round(53147 / (53147 + 77722), 2),
+    NA,
+    4165,
+    6834
+  ),
+
+  # Random-slope model
+  estimate_3 = c(
+    77392,
+    45210,
+    NA,
+    round(45210 / (45210 + 77392), 2),
+    NA,
+    4165,
+    6834
+  )
+)
+
+table2 <- table2 %>%
+  modify_table_body(
+    ~ bind_rows(.x, extra_rows)
+  )
+```
+
+```{r combining-beta-and-ci}
+table2 <- table2 %>%
+  modify_column_merge(
+    pattern = "{estimate_1} ({conf.low_1}, {conf.high_1})",
+    rows = !is.na(conf.low_1) & !is.na(conf.high_1)
+  ) %>%
+  modify_column_merge(
+    pattern = "{estimate_2} ({conf.low_2}, {conf.high_2})",
+    rows = !is.na(conf.low_2) & !is.na(conf.high_2)
+  ) %>%
+  modify_column_merge(
+    pattern = "{estimate_3} ({conf.low_3}, {conf.high_3})",
+    rows = !is.na(conf.low_3) & !is.na(conf.high_3)
+  )
+```
+
+```{r column-headers}
+table2 <- table2 %>%
+  modify_header(
+    label = "**Characteristic**",
+    bivariable = "**β (95% CI)**",
+    estimate_1 = "**β (95% CI)**",
+    estimate_2 = "**β (95% CI)**",
+    estimate_3 = "**β (95% CI)**"
+  ) %>%
+
+  modify_spanning_header(
+    bivariable ~ "**Bivariable**"
+  ) %>%
+
+  modify_column_hide(
+    columns = any_of(c(
+      "p.value",
+      "p.value_1",
+      "p.value_2",
+      "p.value_3"
+    ))
+  )
+```
+
+```{r formatting-random-effects}
+table2 <- table2 %>%
+  modify_fmt_fun(
+    c(
+      estimate_1, conf.low_1, conf.high_1,
+      estimate_2, conf.low_2, conf.high_2,
+      estimate_3, conf.low_3, conf.high_3
+    ) ~ function(x) {
+      gtsummary::style_number(
+        x,
+        digits = 1,
+        big.mark = ","
+      )
+    }
+  )
+
+table2
+```
+
+
+```{r saving-table-2}
+table2_flex <- as_flex_table(table2) %>%
+  autofit() %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  bold(part = "header") %>%
+set_caption(
+  caption = as_paragraph(
+    as_chunk(
+      "Table 3.3. ",
+      props = fp_text(font.family = "Times New Roman", font.size = 12, bold = TRUE)
+    ),
+    as_chunk(
+      "Comparison of linear and mixed-effects model Estimates (β) and 95% Confidence Intervals",
+      props = fp_text(font.family = "Times New Roman", font.size = 12, bold = FALSE)
+    )))
+
+table2_flex
+
+save_as_docx(
+  table2_flex,
+  path = "tables and figures/table2.docx"
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

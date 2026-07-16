@@ -1,0 +1,325 @@
+---
+title: "missing-data"
+output: html_document
+date: "2026-07-15"
+---
+
+# Data cleaning + imputation
+
+## Data preparation
+
+```{r loading-libraries, message = false}
+library(tidyverse)
+library(sf)
+library(dplyr)
+library(visdat)
+library(naniar)
+library(gtsummary)
+library(gt)
+library(mice)
+library(flextable)
+library(officer)
+library(gtsummary)
+library(kableExtra)
+```
+
+```{r reading-data}
+data <- readRDS("data/analysis_dataset.rds")
+```
+
+```{r harmonizing-mvpa}
+data <- data %>%
+  mutate(
+    modpa_days = if_else(modpa_days < 0, NA_real_, modpa_days),
+    modpa_freq = if_else(modpa_freq < 0, NA_real_, modpa_freq),
+    vigpa_days = if_else(vigpa_days < 0, NA_real_, vigpa_days),
+    vigpa_freq = if_else(vigpa_freq < 0, NA_real_, vigpa_freq)
+  )
+
+data <- data %>%
+  mutate(
+    modpa_min_week = case_when(
+      modpa == 2 ~ 0,  
+      modpa == 1 & !is.na(modpa_days) & !is.na(modpa_freq) ~ modpa_days * modpa_freq,
+      TRUE ~ NA_real_ # if missing -> NA, if 0 -> 0. 
+    ),
+    vigpa_min_week = case_when(
+      vigpa == 2 ~ 0,
+      vigpa == 1 & !is.na(vigpa_days) & !is.na(vigpa_freq) ~ vigpa_days * vigpa_freq,
+      TRUE ~ NA_real_
+    ),
+    mvpa_computed = modpa_min_week + vigpa_min_week
+  )
+
+ data <- data %>%
+   mutate(
+     mvpa_harmonized = case_when(
+       !is.na(mvpa) ~ mvpa,                    
+       is.na(mvpa) & !is.na(mvpa_computed) ~ mvpa_computed,
+       TRUE ~ NA_real_
+     )
+   )
+```
+
+```{r recoding-ethnicity}
+data <- data %>%
+  mutate(
+    ethnicity_r = case_when(
+      ethnicity == "African origins" ~ 1,
+      ethnicity == "Asian origins" ~ 2,
+      ethnicity == "European origins" ~ 3,
+      ethnicity == "Latin, Central and South American origins" ~ 4,
+      ethnicity == "North American origins" ~ 5,
+      ethnicity == "Other ethnic and cultural origins" ~ 6))
+
+table(data$ethnicity, data$ethnicity_r)
+```
+
+```{r saving-geometry}
+# saving geometry to re-attach it after imputation
+
+geom_df <- data %>%
+  st_drop_geometry() %>%
+  mutate(
+    wave = factor(wave),
+    geometry = st_geometry(data)) %>% 
+  select(interact_id, wave, geometry, 
+         public_transit) # won't be imputed but will be added later
+       
+crs_orig <- st_crs(data)
+```
+
+```{r creating-data-sample}
+data_sample <- data %>%
+  st_drop_geometry() %>%            
+  mutate(
+    city_id      = factor(city_id),
+    wave         = factor(wave),
+    gender       = factor(gender),
+    ethnicity_r  = factor(ethnicity_r),
+    employment   = factor(employment),
+    income       = factor(income),
+    education    = factor(education),
+    travel_walk  = factor(travel_walk),
+    travel_bike  = factor(travel_bike),
+    travel_motor = factor(travel_motor)
+  ) %>%
+  select(
+    interact_id, wave, city_id,
+    gender, age, ethnicity_r, employment, income, education,
+    travel_walk, travel_bike, travel_motor,
+    ALE_index, ALE_transit_index, z_int, z_dwel, z_poi_count, trstop_count, mvpa_harmonized
+  )
+```
+
+## Examining missingness
+
+```{r missing-proportion}
+prop_miss(data_sample)
+```
+
+```{r missingness-by-variable}
+analysis_vars <- c(
+  "mvpa_harmonized",
+  "travel_walk",
+  "travel_bike",
+  "ALE_index",
+  "trstop_count",
+  "income",
+  "age",
+  "gender",
+  "ethnicity_r",
+  "city_id",
+  "wave"
+)
+
+missing_table <- data_sample %>%
+  st_drop_geometry() %>%
+  summarise(
+    across(
+      all_of(analysis_vars),
+      list(
+        n_missing = ~ sum(is.na(.)),
+        pct_missing = ~ mean(is.na(.)) * 100
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(.+)_(n_missing|pct_missing)"
+  ) %>%
+  mutate(
+    pct_missing = round(pct_missing, 1),
+    variable_label = recode(
+      variable,
+      "mvpa_harmonized" = "Moderate-to-vigorous physical activity",
+      "travel_walk" = "Walking for transportation",
+      "travel_bike" = "Cycling for transportation",
+      "ALE_index" = "Can-ALE index",
+      "trstop_count" = "Transit stop count",
+      "income" = "Household income",
+      "age" = "Age",
+      "gender" = "Gender",
+      "ethnicity_r" = "Ethnic or cultural background",
+      "city_id" = "City",
+      "wave" = "Wave"
+    ),
+    role = recode(
+      variable,
+      "mvpa_harmonized" = "Outcome",
+      "travel_walk" = "Exposure component",
+      "travel_bike" = "Exposure component",
+      "ALE_index" = "Built environment measure",
+      "trstop_count" = "Built environment measure",
+      "income" = "Effect modifier / covariate",
+      "age" = "Covariate",
+      "gender" = "Covariate",
+      "ethnicity_r" = "Covariate",
+      "city_id" = "Covariate",
+      "wave" = "Time variable"
+    )
+  ) %>%
+  select(
+    Variable = variable_label,
+    Role = role,
+    `Missing, n` = n_missing,
+    `Missing, %` = pct_missing
+  )
+
+```
+
+```{r exporting-table}
+missing_table_flex <- flextable(missing_table) %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  bold(part = "header") %>%
+  align(
+    j = c("Variable", "Role"),
+    align = "left",
+    part = "all"
+  ) %>%
+  align(
+    j = c("Missing, n", "Missing, %"),
+    align = "center",
+    part = "all"
+  ) %>%
+  colformat_num(
+    j = "Missing, %",
+    digits = 1,
+    na_str = "\u2014"
+  ) %>%
+  autofit() %>%
+  set_caption(
+    caption = as_paragraph(
+      as_chunk(
+        "Table S2. ",
+        props = fp_text(
+          font.family = "Times New Roman",
+          font.size = 12,
+          bold = TRUE
+        )
+      ),
+      as_chunk(
+        "Missingness by analysis variable before imputation",
+        props = fp_text(
+          font.family = "Times New Roman",
+          font.size = 12,
+          bold = FALSE
+        )
+      )
+    )
+  )
+
+missing_table_flex
+
+save_as_docx(
+  missing_table_flex,
+  path = "tables and figures/missing_table_flex.docx")
+```
+
+## MICE
+
+```{r prediction-matrix}
+pred <- make.predictorMatrix(data_sample)
+ignore <- c("interact_id")
+pred[, ignore] <- 0
+```
+
+```{r mice}
+set.seed(8)
+data_mice <- mice(data_sample, m = 5, maxit = 5, predictorMatrix = pred)
+```
+
+```{r completed-dataset}
+data_mice_long <- complete(data_mice, action = "long")
+data_mice_long$.imp <- as.factor(data_mice_long$.imp)
+
+data_mice_c <- complete(data_mice, action = 1)
+
+# re-attaching geometry
+data_mice_sf <- data_mice_c %>%
+  left_join(geom_df, by = c("interact_id", "wave")) %>%
+  st_as_sf(crs = crs_orig)
+```
+
+
+```{r density-plots}
+# age
+age_plot <- ggplot() +
+  geom_density(
+    data = data_sample,
+    aes(x = age, colour = "Original Data"),
+    na.rm = TRUE
+  ) +
+  geom_density(
+    data = data_mice_c,
+    aes(x = age, colour = "MICE-imputed Data"),
+    na.rm = TRUE
+  ) +
+  labs(
+    x = "Age",
+    y = "Density",
+    colour = "Dataset"
+  )
+age_plot
+
+# ale-index
+ale_plot <- ggplot() +
+  geom_density(
+    data = data_sample,
+    aes(x = ALE_index, colour = "Original Data"),
+    na.rm = TRUE
+  ) +
+  geom_density(
+    data = data_mice_c,
+    aes(x = ALE_index, colour = "MICE-imputed Data"),
+    na.rm = TRUE
+  ) +
+  labs(
+    x = "ALE Index",
+    y = "Density",
+    colour = "Dataset"
+  )
+
+ale_plot 
+```
+
+```{r comparing-summary-stats}
+summary(data_sample)
+summary(data_mice_c)
+```
+
+```{r saving-imputed-data}
+saveRDS(data_mice_sf,"data/imputed_dataset.rds")
+```
+
+
+
+
+
+
+
+
