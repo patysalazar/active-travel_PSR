@@ -1,0 +1,379 @@
+---
+title: "maps"
+output: html_document
+date: "2026-06-27"
+---
+
+# MVPA by DA maps
+
+```{r loading-libraries}
+library(gt)
+library(sf)
+library(tidyverse)
+library(scales)
+library(cowplot)
+library(ggspatial)
+```
+
+```{r loading-data}
+data <- readRDS("data/final_dataset_analysis.rds")
+
+pts_w1 <- readRDS("data/pts_w1_da.rds")
+pts_w2 <- readRDS("data/pts_w2_da.rds")
+pts_w3 <- readRDS("data/pts_w3_da.rds")
+pts_w4 <- readRDS("data/pts_w4_da.rds")
+
+da_w1 <- readRDS("data/wave1_participants_da.rds")
+da_w2 <- readRDS("data/wave2_participants_da.rds")
+da_w3 <- readRDS("data/wave3_participants_da.rds")
+da_w4 <- readRDS("data/wave4_participants_da.rds")
+```
+
+```{r prepare-map-data}
+blue_palette <- scales::seq_gradient_pal("#0B2C35", "#8CAFB2", "Lab")(seq(0,1,length.out=8))
+
+# combine participant points across waves
+pts_all_da <- bind_rows(
+  pts_w1,
+  pts_w2,
+  pts_w3,
+  pts_w4
+)
+
+# combine DA polygons across waves
+da_all <- bind_rows(
+  da_w1,
+  da_w2,
+  da_w3,
+  da_w4
+)
+
+# attach mvpa variable
+data_mvpa <- data %>%
+  st_drop_geometry() %>%
+  transmute(
+    interact_id = as.character(interact_id),
+    wave = as.integer(as.character(wave)),
+    mvpa_cap,
+    city_id
+  )
+
+pts_da_mvpa <- pts_all_da %>%
+  mutate(
+    interact_id = as.character(interact_id),
+    wave = as.integer(wave_id)
+  ) %>%
+  left_join(data_mvpa, by = c("interact_id", "wave"))
+
+map_scale <- annotation_scale(
+  location = "bl",
+  width_hint = 0.18,
+  text_cex = 0.8,
+  bar_cols = c("grey20", "white"),
+  pad_x = grid::unit(0.3, "cm"),
+  pad_y = grid::unit(0.3, "cm")
+)
+
+map_north <- annotation_north_arrow(
+  location = "tr",
+  which_north = "true",
+  height = grid::unit(1.0, "cm"),
+  width = grid::unit(1.0, "cm"),
+  pad_x = grid::unit(0.3, "cm"),
+  pad_y = grid::unit(0.3, "cm"),
+  style = north_arrow_fancy_orienteering()
+)
+
+big_mvpa_fill <- scale_fill_gradientn(
+  colours = blue_palette,
+  name = "Mean MVPA\n(minutes/week)",
+  guide = guide_colourbar(
+    barheight = grid::unit(5.5, "cm"),
+    barwidth  = grid::unit(0.65, "cm"),
+    title.position = "top",
+    title.hjust = 0.5,
+    label.position = "right"
+  ),
+  na.value = "grey70"
+)
+
+map_theme <- theme_void(base_size = 12) +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+
+    panel.background = element_rect(fill = "white", colour = NA),
+    plot.background  = element_rect(fill = "white", colour = NA),
+    panel.border = element_blank(),
+
+    # legend formatting
+    legend.title = element_text(face = "bold", size = 15),
+    legend.text = element_text(size = 12),
+    legend.key.height = grid::unit(1.2, "cm"),
+    legend.key.width  = grid::unit(0.6, "cm"),
+
+    plot.margin = margin(2, 2, 2, 2)
+  )
+```
+
+```{r saskatoon}
+pts_sask_all <- pts_da_mvpa %>%
+  filter(city == "saskatoon")
+
+# aggregate mean mvpa by DA
+mvpa_da_sask_all <- pts_sask_all %>%
+  st_drop_geometry() %>%
+  group_by(GeoUID) %>%
+  summarise(
+    n_obs = sum(!is.na(mvpa_cap)),
+    mvpa_mean = mean(mvpa_cap, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# keep one polygon per DA
+da_sask <- da_all %>%
+  filter(city == "saskatoon") %>%
+  mutate(GeoUID = as.character(GeoUID)) %>%
+  distinct(GeoUID, .keep_all = TRUE)
+
+# join MVPA values to polygons
+da_sask_mvpa_all <- da_sask %>%
+  left_join(mvpa_da_sask_all, by = "GeoUID") 
+
+# map MVPA all waves
+sask_mvpa_map <- ggplot(da_sask_mvpa_all) +
+  geom_sf(aes(fill = mvpa_mean), color = "white", linewidth = 0.05) +
+  coord_sf(
+    xlim = c(-106.85, -106.45),
+    ylim = c(52.06, 52.235),
+    expand = FALSE
+  ) +
+  big_mvpa_fill +
+  map_theme +
+  map_north +
+  map_scale +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    legend.title = element_text(
+      face = "bold",
+      size = 11
+    ))
+```
+
+```{r montreal}
+pts_mtl_all <- pts_da_mvpa %>%
+  filter(city == "montreal")
+
+# aggregate mean mvpa by DA
+mvpa_da_mtl_all <- pts_mtl_all %>%
+  st_drop_geometry() %>%
+  group_by(GeoUID) %>%
+  summarise(
+    n_obs = sum(!is.na(mvpa_cap)),
+    mvpa_mean = mean(mvpa_cap, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# keep one polygon per DA
+da_mtl <- da_all %>%
+  filter(city == "montreal") %>%
+  mutate(GeoUID = as.character(GeoUID)) %>%
+  distinct(GeoUID, .keep_all = TRUE)
+
+# join MVPA values to polygons
+da_mtl_mvpa_all <- da_mtl %>%
+  left_join(mvpa_da_mtl_all, by = "GeoUID") 
+
+# map MVPA all waves
+mtl_mvpa_map <- ggplot(da_mtl_mvpa_all) +
+  geom_sf(aes(fill = mvpa_mean), color = "white", linewidth = 0.05) +
+  coord_sf(
+    xlim = c(-74.05, -73.42),
+    ylim = c(45.41, 45.73),
+    expand = FALSE
+  ) +
+  big_mvpa_fill +
+  map_theme +
+  map_north +
+  map_scale +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    legend.title = element_text(
+      face = "bold",
+      size = 11
+    ))
+```
+
+```{r vancouver}
+pts_van_all <- pts_da_mvpa %>%
+  filter(city == "vancouver")
+
+# aggregate mean mvpa by DA
+mvpa_da_van_all <- pts_van_all %>%
+  st_drop_geometry() %>%
+  group_by(GeoUID) %>%
+  summarise(
+    n_obs = sum(!is.na(mvpa_cap)),
+    mvpa_mean = mean(mvpa_cap, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# keep one polygon per DA
+da_van <- da_all %>%
+  filter(city == "vancouver") %>%
+  mutate(GeoUID = as.character(GeoUID)) %>%
+  distinct(GeoUID, .keep_all = TRUE)
+
+# join MVPA values to polygons
+da_van_mvpa_all <- da_van %>%
+  left_join(mvpa_da_van_all, by = "GeoUID") 
+
+# map MVPA all waves
+van_mvpa_map <- ggplot(da_van_mvpa_all) +
+  geom_sf(aes(fill = mvpa_mean), color = "white", linewidth = 0.05) +
+  coord_sf(
+    xlim = c(-123.26, -123.07),
+    ylim = c(49.20, 49.30),
+    expand = FALSE
+  ) +
+  big_mvpa_fill +
+  map_theme +
+  map_north +
+  map_scale +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    legend.title = element_text(
+      face = "bold",
+      size = 11
+    )) 
+```
+
+```{r victoria}
+pts_vic_all <- pts_da_mvpa %>%
+  filter(city == "victoria")
+
+# aggregate mean mvpa by DA
+mvpa_da_vic_all <- pts_vic_all %>%
+  st_drop_geometry() %>%
+  group_by(GeoUID) %>%
+  summarise(
+    n_obs = sum(!is.na(mvpa_cap)),
+    mvpa_mean = mean(mvpa_cap, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# keep one polygon per DA
+da_vic <- da_all %>%
+  filter(city == "victoria") %>%
+  mutate(GeoUID = as.character(GeoUID)) %>%
+  distinct(GeoUID, .keep_all = TRUE)
+
+# join MVPA values to polygons
+da_vic_mvpa_all <- da_vic %>%
+  left_join(mvpa_da_vic_all, by = "GeoUID") 
+
+# map MVPA all waves
+vic_mvpa_map <- ggplot(da_vic_mvpa_all) +
+  geom_sf(aes(fill = mvpa_mean), color = "white", linewidth = 0.05) +
+  coord_sf(
+    xlim = c(-123.61, -123.22),
+    ylim = c(48.4, 48.59),
+    expand = FALSE
+  ) +
+  big_mvpa_fill +
+  map_theme +
+  map_north +
+  map_scale +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    legend.title = element_text(
+      face = "bold",
+      size = 11
+    ))
+```
+
+```{r map-grid}
+maps_grid <- cowplot::plot_grid(
+  sask_mvpa_map + theme(legend.position = "none"),
+  mtl_mvpa_map  + theme(legend.position = "none"),
+  van_mvpa_map  + theme(legend.position = "none"),
+  vic_mvpa_map  + theme(legend.position = "none"),
+  ncol = 2,
+  labels = c("A", "B", "C", "D"),
+  label_size = 12,
+  label_fontface = "bold",
+  label_x = 0.01,
+  label_y = 0.90,
+  hjust = 0,
+  vjust = 1
+)
+```
+
+```{r combine-maps}
+legend <- cowplot::get_legend(
+  vic_mvpa_map +
+    theme(
+      legend.position = "right",
+      legend.title = element_text(
+        face = "bold",
+        size = 10,
+        lineheight = 0.9
+      ),
+      legend.text = element_text(size = 9)
+    ))
+
+mvpa_city_maps <- cowplot::plot_grid(
+  maps_grid,
+  legend,
+  ncol = 2,
+  rel_widths = c(1, 0.20)
+)
+
+mvpa_city_maps
+```
+
+```{r saving-figure-pdf}
+ggsave(
+  "tables and figures/mvpa_da_maps_by_city.pdf",
+  mvpa_city_maps,
+  width = 170,
+  height = 150,
+  units = "mm",
+  bg = "white"
+)
+```
+
+```{r saving-figure-png}
+ggsave(
+  "tables and figures/mvpa_da_maps_by_city.png",
+  mvpa_city_maps,
+  width = 170,
+  height = 150,
+  units = "mm",
+  dpi = 300,
+  bg = "white"
+)
+```
+
+
+
+
+
+
+
+
+

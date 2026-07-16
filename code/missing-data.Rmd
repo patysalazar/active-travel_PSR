@@ -237,7 +237,7 @@ missing_table_flex
 
 save_as_docx(
   missing_table_flex,
-  path = "tables and figures/missing_table_flex.docx")
+  path = "tables and figures/missing_table.docx")
 ```
 
 ## MICE
